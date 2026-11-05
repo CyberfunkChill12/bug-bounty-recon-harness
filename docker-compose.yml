@@ -11,5 +11,12 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITLAB_TOKEN=${GITLAB_TOKEN:-}
       - SHODAN_API_KEY=${SHODAN_API_KEY:-}
+      # Burp proxy toggle: empty = OFF (tools connect directly). Set to Burp's listener to
+      # route active web tools (httpx/nuclei/subzy) through Burp, e.g.
+      #   BURP_PROXY=http://host.docker.internal:8080 docker compose up -d
+      - BURP_PROXY=${BURP_PROXY:-}
+    extra_hosts:
+      # lets the container reach Burp running on your host (Mac/Win/Linux)
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data

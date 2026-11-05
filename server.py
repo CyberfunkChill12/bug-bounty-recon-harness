@@ -52,15 +52,28 @@ def need_key(tool, *envs):
                 "Set it in your shell and restart the container (docker compose up -d).")
     return None
 
+# Burp proxy toggle: empty = OFF (direct). Set BURP_PROXY (e.g. http://host.docker.internal:8080)
+# to route ACTIVE web tools (httpx / nuclei / subzy) through Burp. Passive OSINT stays direct.
+BURP = os.environ.get("BURP_PROXY", "").strip()
+
+def proxy_env():
+    """Per-call env that routes an active tool's traffic through Burp when enabled, else None."""
+    if not BURP:
+        return None
+    e = os.environ.copy()
+    e["HTTP_PROXY"] = e["http_proxy"] = BURP
+    e["HTTPS_PROXY"] = e["https_proxy"] = BURP
+    return e
+
 BLOCK_MSG = ("BLOCKED: this is an ACTIVE tool. Ask the operator for the arming code and call again "
              "with confirm_code set. Do not guess the code.")
 
-def run(program, tool, target, argv):
+def run(program, tool, target, argv, env=None):
     # SCOPE HOOK: enforced in code, cannot be prompt-injected away
     if not in_scope(program, target):
         log(program, tool, target, argv, -1, "", allowed=False)
         raise ValueError(f"REFUSED: {target} not in scope for {program}")
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=1800, env=env)
     log(program, tool, target, argv, p.returncode, p.stdout, allowed=True)
     return p.stdout
 
@@ -69,14 +82,14 @@ def scoped_hosts(program, limit=None):
     hosts = [h for h in rows if in_scope(program, h)]
     return hosts[:limit] if limit else hosts
 
-def run_list(program, tool, hosts, build_cmd, timeout=3600):
+def run_list(program, tool, hosts, build_cmd, timeout=3600, env=None):
     if not hosts:
         return "no in-scope hosts to scan"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("\n".join(hosts)); path = f.name
     argv = build_cmd(path)
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
         log(program, tool, f"{len(hosts)} hosts", argv, p.returncode, p.stdout, allowed=True)
         return p.stdout
     finally:
@@ -236,10 +249,11 @@ def summarize(program: str) -> str:
 def resolve_probe(program: str, confirm_code: str = "") -> str:
     """ACTIVE: resolve known hosts and HTTP-probe them to find live ones. Requires the operator's arming code."""
     if not armed(confirm_code): return BLOCK_MSG
+    extra = ["-proxy", BURP] if BURP else []
     live = []
     for h in scoped_hosts(program):
         try:
-            out = run(program, "resolve_probe", h, ["httpx", "-u", h, "-silent", "-sc"])
+            out = run(program, "resolve_probe", h, ["httpx", "-u", h, "-silent", "-sc"] + extra, env=proxy_env())
             if out.strip(): live.append(out.strip())
         except ValueError:
             continue
@@ -251,7 +265,8 @@ def takeover_check(program: str, confirm_code: str = "") -> str:
     Returns CANDIDATES to verify by hand; does not auto-record findings."""
     if not armed(confirm_code): return BLOCK_MSG
     out = run_list(program, "takeover_check", scoped_hosts(program),
-                   lambda path: ["subzy", "run", "--targets", path, "--hide_fails"])
+                   lambda path: ["subzy", "run", "--targets", path, "--hide_fails"],
+                   env=proxy_env())
     return out or "no takeover candidates"
 
 @mcp.tool()
@@ -262,8 +277,9 @@ def nuclei_scan(program: str, confirm_code: str = "", tags: str = "", max_hosts:
     def cmd(path):
         a = ["nuclei", "-l", path, "-silent"]
         if tags: a += ["-tags", tags]
+        if BURP: a += ["-proxy", BURP]
         return a
-    out = run_list(program, "nuclei_scan", scoped_hosts(program, limit=max_hosts), cmd)
+    out = run_list(program, "nuclei_scan", scoped_hosts(program, limit=max_hosts), cmd, env=proxy_env())
     return out or "no nuclei hits"
 
 if __name__ == "__main__":

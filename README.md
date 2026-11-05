@@ -134,6 +134,13 @@ Tell the agent in plain language:
 
 Passive discovery runs freely. When you move to active scanning (`resolve_probe`, `takeover_check`, `nuclei_scan`), the agent will ask for your **arming code** — the value you set in `ACTIVE_ARM_CODE`. Provide it only for programs you're authorized to test.
 
+### 6. Verify before you report
+Scanner output and the agent's claims are **candidates, not findings**. Re-check them independently before you submit anything:
+```bash
+docker compose exec harness-mcp python verify.py <program>
+```
+`verify.py` re-runs detection on each recorded finding (reproduce-or-reject) and asserts scope invariants against the audit log — so only findings that hold up on an independent pass become claims. It's a standalone script, not an agent tool: the agent never grades its own work.
+
 ## Build notes / lessons learned
 
 - **MCP tools over a raw shell.** Handing an agent a shell *and* a scanner is the

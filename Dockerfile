@@ -10,7 +10,7 @@ FROM python:3.12-slim
 COPY --from=tools /go/bin/ /usr/local/bin/
 RUN pip install --no-cache-dir "mcp[cli]<2"
 WORKDIR /app
-COPY server.py .
+COPY server.py verify.py ./
 ENV HARNESS_DB=/data/harness.db
 EXPOSE 8000
 CMD ["python", "server.py"]

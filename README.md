@@ -85,19 +85,54 @@ Because every guarantee lives in **code**, it holds regardless of the model — 
 weaker or less-aligned model is boxed by the same scope hook and the same human
 gate. The safety doesn't depend on the model being smart or well-behaved.
 
-## Running it
+## Getting started
 
+### Prerequisites
+- **Docker** (Docker Desktop on macOS/Windows, or Docker Engine on Linux)
+- **An MCP-capable agent/client** — anything that can talk to a Streamable HTTP MCP server (examples below)
+
+### 1. Get the harness
 ```bash
-# build + start the harness (set an arming code to enable active scans)
-ACTIVE_ARM_CODE='your-code' docker compose up -d --build
-
-# point your Codex desktop app at this folder and add the MCP server:
-#   Settings → MCP servers → Add Server → Streamable HTTP → http://localhost:8000/mcp
+git clone https://github.com/CyberfunkChill12/bug-bounty-recon-harness
+cd bug-bounty-recon-harness
 ```
 
-Then, in the agent: set a program's authorized scope, run passive enum, review,
-and — with your arming code — run active detection. Full walkthrough in the
-project docs.
+### 2. Build and start it
+```bash
+# Set ACTIVE_ARM_CODE to a secret of your choice to enable active scans.
+# Omit it and active scanning stays disabled (passive recon still works).
+ACTIVE_ARM_CODE='pick-a-secret' docker compose up -d --build
+```
+The first build takes a few minutes (it compiles the recon tools). Then verify:
+```bash
+docker compose ps                  # STATUS should be "Up"
+curl -i http://localhost:8000/mcp  # a 406 "must accept text/event-stream" = healthy
+```
+The harness is now serving MCP at **`http://localhost:8000/mcp`**.
+
+### 3. Connect your agent (any model)
+It's a standard **Streamable HTTP MCP server** — point any MCP-capable client at the URL above:
+
+| Client (model) | How to connect |
+|---|---|
+| **OpenAI Codex** (GPT) | Settings → MCP servers → Add Server → type `Streamable HTTP`, URL `http://localhost:8000/mcp` |
+| **Claude Desktop / Claude Code** (Claude) | Add as a custom/remote MCP server with the same URL |
+| **Cursor** (any) | `.cursor/mcp.json`: `{ "mcpServers": { "harness": { "url": "http://localhost:8000/mcp" } } }` |
+| **Custom agent** (GPT, DeepSeek, Llama, Ollama…) | Use any MCP client library, connect to the URL, and call the tools from your agent loop |
+
+Restart the client if the tools don't show up right away.
+
+### 4. Give the agent its playbook
+Point your runtime at the included instruction file so it knows the tools and the flow:
+- **Codex:** keep `AGENTS.md` in the working folder (already here).
+- **Claude:** copy it to `CLAUDE.md`.
+- **Custom agent:** load `AGENTS.md` as the system prompt.
+
+### 5. First run
+Tell the agent in plain language:
+> Set scope for program **test** to root **example.com**, run passive enum, and show me what you found.
+
+Passive discovery runs freely. When you move to active scanning (`resolve_probe`, `takeover_check`, `nuclei_scan`), the agent will ask for your **arming code** — the value you set in `ACTIVE_ARM_CODE`. Provide it only for programs you're authorized to test.
 
 ## Build notes / lessons learned
 

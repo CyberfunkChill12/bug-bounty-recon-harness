@@ -4,8 +4,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      # The arming code is read from your shell at launch time, NOT stored in this file,
-      # so the agent (which can read this file) never sees the real value.
+      # Arming code for active tools (read from your shell at launch; not stored in this file).
       - ACTIVE_ARM_CODE=${ACTIVE_ARM_CODE:-__unset__}
+      # Optional API keys/tokens for passive sources — passed through from your shell if set.
+      - PDCP_API_KEY=${PDCP_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      - SHODAN_API_KEY=${SHODAN_API_KEY:-}
     volumes:
       - ./data:/data

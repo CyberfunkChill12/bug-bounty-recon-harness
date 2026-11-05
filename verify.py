@@ -5,18 +5,20 @@ Run by the OPERATOR (not the agent), inside the container where the tools live:
 
     docker compose exec harness-mcp python verify.py <program>
 
-It does the two things that turn "candidates" into findings you can trust:
-
-  1. Audit-log invariants (deterministic, no network): prove the harness stayed
+  1. Audit-log invariants (deterministic, no network): prove ACTIVE tools stayed
      in scope and surface anything odd in the tool_log ground truth.
   2. Finding reproduction: re-run detection on every recorded finding's host and
      confirm it still reproduces. Only CONFIRMED findings should become claims.
 
-It is deliberately NOT an MCP tool — the agent must not grade its own work.
+Deliberately NOT an MCP tool — the agent must not grade its own work.
 """
 import os, sys, sqlite3, subprocess, ipaddress
 
 DB = os.environ.get("HARNESS_DB", "/data/harness.db")
+# Only tools that send traffic to the target are scope-invariant-checked.
+# Passive discovery tools (whois/asnmap/uncover/shodan) legitimately run on
+# not-yet-in-scope things, so they are excluded.
+ACTIVE_TOOLS = {"resolve_probe", "takeover_check", "nuclei_scan"}
 
 
 def db():
@@ -53,19 +55,16 @@ def looks_like_host(t):
 def check_invariants(c, program):
     print("== Audit-log invariants ==")
     problems = 0
-    # 1. No ALLOWED run may have targeted an out-of-scope single host.
     for tool, target in c.execute(
             "SELECT tool, target FROM tool_log WHERE program=? AND allowed=1", (program,)):
-        if looks_like_host(target) and not in_scope(c, program, target):
+        if tool in ACTIVE_TOOLS and looks_like_host(target) and not in_scope(c, program, target):
             print(f"  [VIOLATION] allowed '{tool}' run targeted out-of-scope {target}")
             problems += 1
-    # 2. Every stored asset must still re-validate as in scope.
     oos = [h for (h,) in c.execute("SELECT host FROM assets WHERE program=?", (program,))
            if not in_scope(c, program, h)]
     if oos:
         print(f"  [VIOLATION] {len(oos)} stored assets out of scope (e.g. {oos[:3]})")
         problems += len(oos)
-    # 3. Refused attempts — informational (the scope hook doing its job).
     refused = c.execute(
         "SELECT count(*) FROM tool_log WHERE program=? AND allowed=0", (program,)).fetchone()[0]
     print(f"  blocked (out-of-scope) attempts logged: {refused}")
@@ -85,16 +84,12 @@ def reproduce(c, program):
         if not in_scope(c, program, host):
             print(f"  [SCOPE]          {host}  ({ftype}) — out of scope, not re-checked")
             continue
-        t = (ftype or "").lower()
-        if "takeover" in t:
+        if "takeover" in (ftype or "").lower():
             out = run(["subzy", "run", "--target", host, "--hide_fails"])
         else:
-            # Re-run nuclei on the single host. For precise per-template checks,
-            # record the template id in `type` and pass it via `-id` here.
             out = run(["nuclei", "-u", host, "-silent"])
         if out.strip():
-            print(f"  [CONFIRMED]      {host}  ({ftype}, {sev})")
-            confirmed += 1
+            print(f"  [CONFIRMED]      {host}  ({ftype}, {sev})"); confirmed += 1
         else:
             print(f"  [NOT-REPRODUCED] {host}  ({ftype}, {sev}) — drop or investigate")
     print(f"  confirmed: {confirmed}/{len(rows)}")
@@ -103,8 +98,7 @@ def reproduce(c, program):
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: python verify.py <program>")
-        sys.exit(2)
+        print("usage: python verify.py <program>"); sys.exit(2)
     program = sys.argv[1]
     c = db()
     problems = check_invariants(c, program)

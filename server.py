@@ -1,5 +1,5 @@
 # server.py — harness MCP server (Python, FastMCP from mcp v1)
-import json, sqlite3, subprocess, ipaddress, os, time, hashlib, tempfile
+import json, sqlite3, subprocess, ipaddress, os, time, hashlib, tempfile, re
 from mcp.server.fastmcp import FastMCP
 
 DB = os.environ.get("HARNESS_DB", "/data/harness.db")
@@ -24,7 +24,7 @@ def in_scope(program, host):
     roots = [r for (r,) in c.execute("SELECT value FROM scope WHERE program=? AND kind='root'", (program,))]
     cidrs = [r for (r,) in c.execute("SELECT value FROM scope WHERE program=? AND kind='cidr'", (program,))]
     c.close()
-    h = host.strip().lower().rstrip(".")
+    h = (host or "").strip().lower().rstrip(".")
     if any(h == r or h.endswith("." + r) for r in roots):
         return True
     try:
@@ -75,7 +75,32 @@ def run_list(program, tool, hosts, build_cmd, timeout=3600):
         try: os.unlink(path)
         except OSError: pass
 
-# ---------------- passive / safe ----------------
+def record_hosts(program, hosts):
+    now = time.time(); c = db(); n = 0
+    for h in hosts:
+        h = (h or "").strip().lower().rstrip(".")
+        if h and in_scope(program, h):
+            c.execute("""INSERT INTO assets(program,host,first_seen,last_seen) VALUES(?,?,?,?)
+                         ON CONFLICT(program,host) DO UPDATE SET last_seen=?""", (program, h, now, now, now))
+            n += 1
+    c.commit(); c.close(); return n
+
+def passive(program, name, root, argv):
+    """Passive source keyed to a root (root is scope-checked + logged); records in-scope hosts."""
+    out = run(program, name, root, argv)
+    return f"{name}: {record_hosts(program, out.splitlines())} in-scope hosts recorded"
+
+def info(program, name, target, argv, timeout=300, record=False, cap=4000):
+    """Passive info/index lookup (no target traffic). Logs; optionally records in-scope hosts."""
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    log(program, name, target, argv, p.returncode, p.stdout, allowed=True)
+    extra = ""
+    if record:
+        hosts = [l.split(":")[0].strip() for l in p.stdout.splitlines()]
+        extra = f" ({record_hosts(program, hosts)} in-scope hosts recorded)"
+    return ((p.stdout or p.stderr or "no data")[:cap]) + extra
+
+# ================= passive / safe =================
 @mcp.tool()
 def add_scope(program: str, roots: list[str] = [], cidrs: list[str] = []) -> str:
     """Define the authorized scope for a program. Do this before anything else."""
@@ -87,15 +112,72 @@ def add_scope(program: str, roots: list[str] = [], cidrs: list[str] = []) -> str
 
 @mcp.tool()
 def passive_enum(program: str, root: str) -> str:
-    """Passive subdomain enumeration (no traffic to the target). Runs automatically."""
+    """Passive subdomain enumeration via subfinder (no traffic to target)."""
     out = run(program, "passive_enum", root, ["subfinder", "-d", root, "-all", "-silent"])
-    now = time.time(); c = db(); n = 0
-    for host in filter(None, (l.strip().lower() for l in out.splitlines())):
-        c.execute("""INSERT INTO assets(program,host,first_seen,last_seen) VALUES(?,?,?,?)
-                     ON CONFLICT(program,host) DO UPDATE SET last_seen=?""", (program, host, now, now, now))
-        n += 1
-    c.commit(); c.close()
-    return f"{n} hosts recorded from passive enum of {root}"
+    return f"passive_enum: {record_hosts(program, out.splitlines())} in-scope hosts recorded"
+
+@mcp.tool()
+def assetfinder_enum(program: str, root: str) -> str:
+    """Passive: related subdomains via assetfinder."""
+    return passive(program, "assetfinder", root, ["assetfinder", "--subs-only", root])
+
+@mcp.tool()
+def findomain_enum(program: str, root: str) -> str:
+    """Passive: subdomains via findomain (certificate + external sources)."""
+    return passive(program, "findomain", root, ["findomain", "-t", root, "-q"])
+
+@mcp.tool()
+def chaos_enum(program: str, root: str) -> str:
+    """Passive: subdomains from ProjectDiscovery Chaos dataset. Needs PDCP_API_KEY in the container env."""
+    return passive(program, "chaos", root, ["chaos", "-d", root, "-silent"])
+
+@mcp.tool()
+def github_subdomains(program: str, root: str) -> str:
+    """Passive: subdomain references on GitHub. Needs GITHUB_TOKEN in the container env."""
+    return passive(program, "github_subdomains", root,
+                   ["github-subdomains", "-d", root, "-t", os.environ.get("GITHUB_TOKEN", "")])
+
+@mcp.tool()
+def gitlab_subdomains(program: str, root: str) -> str:
+    """Passive: subdomain references on GitLab. Needs GITLAB_TOKEN in the container env."""
+    return passive(program, "gitlab_subdomains", root,
+                   ["gitlab-subdomains", "-d", root, "-t", os.environ.get("GITLAB_TOKEN", "")])
+
+@mcp.tool()
+def archive_domains(program: str, root: str) -> str:
+    """Passive: historical URLs (gau + waybackurls) reduced to in-scope hostnames."""
+    out = run(program, "gau", root, ["gau", "--subs", root]) + "\n" + \
+          run(program, "waybackurls", root, ["waybackurls", root])
+    return f"archives: {record_hosts(program, re.findall(r'https?://([^/:\\s]+)', out))} in-scope hosts recorded"
+
+@mcp.tool()
+def theharvester_enum(program: str, root: str) -> str:
+    """Passive OSINT via theHarvester (public sources). Records in-scope hosts."""
+    p = subprocess.run(["theHarvester", "-d", root, "-b", "crtsh,otx,duckduckgo,bing"],
+                       capture_output=True, text=True, timeout=600)
+    log(program, "theHarvester", root, ["theHarvester", "-d", root], p.returncode, p.stdout, allowed=True)
+    hosts = re.findall(r"([a-z0-9][a-z0-9._-]*\." + re.escape(root.lower()) + r")", p.stdout.lower())
+    return f"theHarvester: {record_hosts(program, hosts)} in-scope hosts recorded"
+
+@mcp.tool()
+def uncover_search(program: str, query: str) -> str:
+    """Passive: search Shodan/Censys/FOFA indexes via uncover (needs provider API keys). Records in-scope hosts."""
+    return info(program, "uncover", query, ["uncover", "-q", query, "-silent"], record=True)
+
+@mcp.tool()
+def shodan_query(program: str, query: str) -> str:
+    """Passive: Shodan search (needs SHODAN_API_KEY / 'shodan init'). Returns indexed info."""
+    return info(program, "shodan", query, ["shodan", "search", "--fields", "ip_str,hostnames", query])
+
+@mcp.tool()
+def asn_info(program: str, query: str) -> str:
+    """Passive: ASN / CIDR ranges for a domain or org (asnmap). Use to help discover scope."""
+    return info(program, "asnmap", query, ["asnmap", "-d", query, "-silent"])
+
+@mcp.tool()
+def whois_lookup(program: str, target: str) -> str:
+    """Passive: whois registration info for a domain or IP."""
+    return info(program, "whois", target, ["whois", target], timeout=60)
 
 @mcp.tool()
 def get_new_assets(program: str, since_hours: float = 24) -> str:
@@ -114,7 +196,7 @@ def record_finding(program: str, host: str, type: str, severity: str, notes: str
 
 @mcp.tool()
 def summarize(program: str) -> str:
-    """Read-only run report: asset/finding counts + recent tool activity from state and the audit log."""
+    """Read-only run report: asset/finding counts + recent tool activity."""
     c = db()
     assets = c.execute("SELECT count(*) FROM assets WHERE program=?", (program,)).fetchone()[0]
     findings = c.execute("SELECT count(*) FROM findings WHERE program=?", (program,)).fetchone()[0]
@@ -126,7 +208,7 @@ def summarize(program: str) -> str:
         out.append(f"  {when}  {t}  allowed={al} exit={ex}")
     return "\n".join(out)
 
-# ---------------- active / gated (need the operator's arming code) ----------------
+# ================= active / gated =================
 @mcp.tool()
 def resolve_probe(program: str, confirm_code: str = "") -> str:
     """ACTIVE: resolve known hosts and HTTP-probe them to find live ones. Requires the operator's arming code."""

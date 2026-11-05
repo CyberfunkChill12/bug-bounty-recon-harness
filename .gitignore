@@ -1,0 +1,15 @@
+# harness state (never commit the asset/finding database)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# python
+__pycache__/
+*.pyc
+
+# editor / OS junk + leftover build files
+.DS_Store
+*.save
+dockerfile.yaml
+.codex/

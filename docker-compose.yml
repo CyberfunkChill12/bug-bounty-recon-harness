@@ -1,0 +1,11 @@
+services:
+  harness-mcp:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # The arming code is read from your shell at launch time, NOT stored in this file,
+      # so the agent (which can read this file) never sees the real value.
+      - ACTIVE_ARM_CODE=${ACTIVE_ARM_CODE:-__unset__}
+    volumes:
+      - ./data:/data

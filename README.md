@@ -69,6 +69,22 @@ recon methodology.
 Python · Model Context Protocol (MCP) · Docker · OpenAI Codex ·
 ProjectDiscovery (`subfinder`, `httpx`, `dnsx`, `nuclei`) · `subzy` · SQLite
 
+## Model-agnostic by design
+
+The harness is the layer *around* the model — the MCP server (tools, scope hook,
+state, gate, audit log) knows nothing about which model is driving it. The agent
+sits in a swappable seat.
+
+Any MCP-capable client can connect to the same server unchanged: OpenAI Codex,
+Claude (Desktop / Code), Cursor, or a custom agent wrapping GPT, DeepSeek, Llama,
+or a local model via Ollama. Only two thin pieces are runtime-specific — the
+client you point at the server, and the instruction file (`AGENTS.md`,
+`CLAUDE.md`, or a system prompt).
+
+Because every guarantee lives in **code**, it holds regardless of the model — a
+weaker or less-aligned model is boxed by the same scope hook and the same human
+gate. The safety doesn't depend on the model being smart or well-behaved.
+
 ## Running it
 
 ```bash

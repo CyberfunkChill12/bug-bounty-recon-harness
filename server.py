@@ -44,6 +44,14 @@ def armed(confirm_code):
     expected = os.environ.get("ACTIVE_ARM_CODE", "__unset__")
     return expected != "__unset__" and confirm_code == expected
 
+def need_key(tool, *envs):
+    """Return a skip message if none of the named env vars are set, else None."""
+    if not any(os.environ.get(e) for e in envs):
+        return (f"{tool}: " + " or ".join(envs) +
+                " not configured in the container env — skipping. "
+                "Set it in your shell and restart the container (docker compose up -d).")
+    return None
+
 BLOCK_MSG = ("BLOCKED: this is an ACTIVE tool. Ask the operator for the arming code and call again "
              "with confirm_code set. Do not guess the code.")
 
@@ -129,17 +137,26 @@ def findomain_enum(program: str, root: str) -> str:
 @mcp.tool()
 def chaos_enum(program: str, root: str) -> str:
     """Passive: subdomains from ProjectDiscovery Chaos dataset. Needs PDCP_API_KEY in the container env."""
+    m = need_key("chaos_enum", "PDCP_API_KEY")
+    if m:
+        return m
     return passive(program, "chaos", root, ["chaos", "-d", root, "-silent"])
 
 @mcp.tool()
 def github_subdomains(program: str, root: str) -> str:
     """Passive: subdomain references on GitHub. Needs GITHUB_TOKEN in the container env."""
+    m = need_key("github_subdomains", "GITHUB_TOKEN")
+    if m:
+        return m
     return passive(program, "github_subdomains", root,
                    ["github-subdomains", "-d", root, "-t", os.environ.get("GITHUB_TOKEN", "")])
 
 @mcp.tool()
 def gitlab_subdomains(program: str, root: str) -> str:
     """Passive: subdomain references on GitLab. Needs GITLAB_TOKEN in the container env."""
+    m = need_key("gitlab_subdomains", "GITLAB_TOKEN")
+    if m:
+        return m
     return passive(program, "gitlab_subdomains", root,
                    ["gitlab-subdomains", "-d", root, "-t", os.environ.get("GITLAB_TOKEN", "")])
 
@@ -162,11 +179,17 @@ def theharvester_enum(program: str, root: str) -> str:
 @mcp.tool()
 def uncover_search(program: str, query: str) -> str:
     """Passive: search Shodan/Censys/FOFA indexes via uncover (needs provider API keys). Records in-scope hosts."""
+    m = need_key("uncover_search", "SHODAN_API_KEY", "CENSYS_API_ID", "FOFA_EMAIL")
+    if m:
+        return m
     return info(program, "uncover", query, ["uncover", "-q", query, "-silent"], record=True)
 
 @mcp.tool()
 def shodan_query(program: str, query: str) -> str:
     """Passive: Shodan search (needs SHODAN_API_KEY / 'shodan init'). Returns indexed info."""
+    m = need_key("shodan_query", "SHODAN_API_KEY")
+    if m:
+        return m
     return info(program, "shodan", query, ["shodan", "search", "--fields", "ip_str,hostnames", query])
 
 @mcp.tool()

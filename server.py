@@ -1,4 +1,13 @@
 # server.py — harness MCP server (Python, FastMCP from mcp v1)
+"""
+Bug-bounty recon & detection harness — MCP server.
+
+Each @mcp.tool() below is an action the agent can call. Everything routes through
+run() / run_list(), which enforce the scope allowlist and write an audit row to
+tool_log. Active (target-touching) tools require the operator's arming code via
+armed(); passive OSINT tools run freely and record only in-scope hosts. All state
+persists in SQLite so programs resume across sessions.
+"""
 import json, sqlite3, subprocess, ipaddress, os, time, hashlib, tempfile, re
 from mcp.server.fastmcp import FastMCP
 
@@ -6,9 +15,11 @@ DB = os.environ.get("HARNESS_DB", "/data/harness.db")
 mcp = FastMCP("harness", host="0.0.0.0", port=8000)
 
 def db():
+    """Open a SQLite connection to the harness DB (WAL mode)."""
     c = sqlite3.connect(DB); c.execute("PRAGMA journal_mode=WAL"); return c
 
 def init():
+    """Create the SQLite tables (scope, assets, findings, tool_log) if they don't exist."""
     db().executescript("""
     CREATE TABLE IF NOT EXISTS scope(program TEXT, kind TEXT, value TEXT);
     CREATE TABLE IF NOT EXISTS assets(program TEXT, host TEXT, ip TEXT, status INT,
@@ -20,6 +31,7 @@ def init():
     """)
 
 def in_scope(program, host):
+    """True if host falls under one of the program's authorized roots or CIDRs."""
     c = db()
     roots = [r for (r,) in c.execute("SELECT value FROM scope WHERE program=? AND kind='root'", (program,))]
     cidrs = [r for (r,) in c.execute("SELECT value FROM scope WHERE program=? AND kind='cidr'", (program,))]
@@ -34,6 +46,7 @@ def in_scope(program, host):
         return False
 
 def log(program, tool, target, argv, code, out, allowed):
+    """Append one row to tool_log: the ground-truth audit record of a tool run."""
     c = db()
     c.execute("INSERT INTO tool_log VALUES (?,?,?,?,?,?,?,?)",
               (time.time(), program, tool, target, json.dumps(argv), code,
@@ -41,6 +54,7 @@ def log(program, tool, target, argv, code, out, allowed):
     c.commit(); c.close()
 
 def armed(confirm_code):
+    """True only if confirm_code matches the operator's ACTIVE_ARM_CODE — the active-tool gate."""
     expected = os.environ.get("ACTIVE_ARM_CODE", "__unset__")
     return expected != "__unset__" and confirm_code == expected
 
@@ -69,6 +83,7 @@ BLOCK_MSG = ("BLOCKED: this is an ACTIVE tool. Ask the operator for the arming c
              "with confirm_code set. Do not guess the code.")
 
 def run(program, tool, target, argv, env=None):
+    """Scope-check a single target, run the command, log it, return stdout. Raises if out of scope."""
     # SCOPE HOOK: enforced in code, cannot be prompt-injected away
     if not in_scope(program, target):
         log(program, tool, target, argv, -1, "", allowed=False)
@@ -78,11 +93,13 @@ def run(program, tool, target, argv, env=None):
     return p.stdout
 
 def scoped_hosts(program, limit=None):
+    """Return the program's stored hosts, filtered to those still in scope."""
     c = db(); rows = [h for (h,) in c.execute("SELECT host FROM assets WHERE program=?", (program,))]; c.close()
     hosts = [h for h in rows if in_scope(program, h)]
     return hosts[:limit] if limit else hosts
 
 def run_list(program, tool, hosts, build_cmd, timeout=3600, env=None):
+    """Write in-scope hosts to a temp file, run a batch tool over it, log the run, return stdout."""
     if not hosts:
         return "no in-scope hosts to scan"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -97,6 +114,7 @@ def run_list(program, tool, hosts, build_cmd, timeout=3600, env=None):
         except OSError: pass
 
 def record_hosts(program, hosts):
+    """Insert/update the in-scope hosts into the assets table; return how many were recorded."""
     now = time.time(); c = db(); n = 0
     for h in hosts:
         h = (h or "").strip().lower().rstrip(".")

@@ -22,10 +22,12 @@ ACTIVE_TOOLS = {"resolve_probe", "takeover_check", "nuclei_scan"}
 
 
 def db():
+    """Open a SQLite connection to the harness DB."""
     return sqlite3.connect(DB)
 
 
 def in_scope(c, program, host):
+    """True if host falls under one of the program's authorized roots or CIDRs."""
     roots = [r for (r,) in c.execute(
         "SELECT value FROM scope WHERE program=? AND kind='root'", (program,))]
     cidrs = [r for (r,) in c.execute(
@@ -41,6 +43,7 @@ def in_scope(c, program, host):
 
 
 def run(cmd, timeout=600):
+    """Run a command and return its stdout (empty string on error or timeout)."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return p.stdout
@@ -49,10 +52,12 @@ def run(cmd, timeout=600):
 
 
 def looks_like_host(t):
+    """Heuristic: does this tool_log target look like a single hostname/IP (not a batch label)?"""
     return bool(t) and " " not in t and "." in t
 
 
 def check_invariants(c, program):
+    """Audit tool_log: flag any active-tool run or stored asset that is out of scope."""
     print("== Audit-log invariants ==")
     problems = 0
     for tool, target in c.execute(
@@ -73,6 +78,7 @@ def check_invariants(c, program):
 
 
 def reproduce(c, program):
+    """Re-run detection on each recorded finding and label it CONFIRMED / NOT-REPRODUCED / SCOPE."""
     print("\n== Finding reproduction ==")
     rows = c.execute(
         "SELECT host, type, severity FROM findings WHERE program=?", (program,)).fetchall()
@@ -97,6 +103,7 @@ def reproduce(c, program):
 
 
 def main():
+    """Run the invariant audit and finding reproduction for one program, then exit non-zero on problems."""
     if len(sys.argv) < 2:
         print("usage: python verify.py <program>"); sys.exit(2)
     program = sys.argv[1]
